@@ -1,93 +1,68 @@
-import express  from 'express';
-import mysql from 'mysql';
+import express from 'express';
+import dotenv from 'dotenv';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
-import jwt from 'jsonwebtoken';
-import bcrypt from 'bcryptjs';
-const salt = 10;
+import compression from 'compression'; // Import compression
+import authRoutes from './routes/authRoutes.js';
+import techniquesRoutes from './routes/techniquesRoutes.js';
+import chatRoutes from './routes/chatRoutes.js';
+import db from './config/db.js';
+import path from 'path';
+import http from 'http';
+import { fileURLToPath } from 'url';
+import setupSocket from './socketSetup.js';
 
-const app = express ();
-app.use (express.json());
-app.use (cors({
-  origin: ["http://localhost:5173"],
-  methods: ["POST","GET"],
-  credentials: true 
-}));
-app.use (cookieParser());
+dotenv.config();
 
+const app = express();
 
-const db = mysql.createConnection({
-    host: "localhost",
-    user: "root",
-    password: "",
-    database: "signup"
+db.authenticate()
+  .then(() => console.log('Database connected...'))
+  .catch(err => {
+    console.error('Unable to connect to the database:', err);
+  });
+
+db.sync({ alter: true })
+  .then(() => console.log('Database synchronized...'))
+  .catch(err => {
+    console.error('Error synchronizing the database:', err);
+  });
+
+// Ajoute le middleware de compression pour toutes les réponses
+app.use(compression());
+
+app.use(express.json());
+app.use(cors({ origin: "http://localhost:5173", credentials: true }));
+app.use(cookieParser());
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+app.use(express.static(path.join(__dirname, 'public')));
+
+app.use((req, res, next) => {
+  console.log('Cookies: ', req.cookies);
+  console.log('Headers: ', req.headers);
+  next();
 });
 
-const verifyUser = (req, res, next) => {
-  const token = req.cookies.token;
-  if (!token) { 
-      return res.json({ Error: "You are not authenticated" });
-  } else {
-      jwt.verify(token, "jwt-secret-key", (err, decoded) => {
-          if (err) {
-              return res.json({ Error: "Token is not okay" }); 
-          } else {
-              req.name = decoded.name; 
-              next();
-          }
-      });
-  }
-};
+app.use('/api/auth', authRoutes);
+app.use('/api/techniques', techniquesRoutes);
+app.use('/api/chat', chatRoutes);
 
-app.get('/', verifyUser, (req, res) => {
-  return res.json({ Status: "Success", name: req.name }); 
-}); 
+app.get('/', (req, res) => {
+  res.send('API is running...');
+});
 
-app.post('/register', (req, res) => {
-    const sql = "INSERT INTO login (`name`, `email`, `password`) VALUES (?)";
-    bcrypt.hash(req.body.password.toString(), salt, (err, hash) => {
-      if(err) return res.json({Error: "Error for hashing password"});
-      const values = [
-        req.body.name,
-        req.body.email,
-        hash
-      ];
-      db.query(sql, [values], (err, result) => {
-        if(err) return res.json({Error: "Inserting data Error in server"});
-        return res.json({Status: "Success"});
-      })
-    })
-  })
-  
+const server = http.createServer(app);
+const io = setupSocket(server);
 
-  app.post('/login' , (req, res) => {
-    const sql = 'SELECT * FROM login WHERE email = ?';
-    db.query(sql, [req.body.email], (err, data) => { 
-     if(err ) return res.json({Error: "Login error in server"});
-     if(data.length > 0) {
-        bcrypt.compare(req.body.password.toString(), data[0].password, (err, response) => {
-         if(err) return res.json({Error: "Password compare error"});
-         if(response) {
-          const name = data[0] .name;
-          const token = jwt.sign({name}, "jwt-secret-key", {expiresIn: '1d'});
-          res.cookie('token', token);
-           return res.json({Status: "Success"});
-         } else {
-         return res.json({Error: "Password not matched"});
-         }
-        })
-     }else {
-       return res.json({Error:"No email existed"});
-     }
-    })
- })
- 
- app.get('/logout', (req,res) => {
-  res.clearCookie('token');
-  return res.json ({Status : "Success"});
+app.set('io', io);
 
-}) 
+app.use((req, res, next) => {
+  req.io = io;
+  next();
+});
 
-app.listen (8081 ,() => {
-    console.log("Running. ..");
-})
+const PORT = process.env.PORT || 8081;
+server.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
+});
